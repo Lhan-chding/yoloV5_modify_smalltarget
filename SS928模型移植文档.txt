@@ -1,0 +1,365 @@
+
+
+SS928模型移植文档
+YOLO模型资料
+本文档内容以yolov5-7.0工程、yolov5s模型为例。
+模型结构
+详细的模型结构可以利用netron工具打开.pt或.onnx模型查看。
+模型参数即验证结果
+其中，YOLOv5n、YOLOv5s、YOLOv5m、YOLOv5l、YOLOv5x为五种类型的预训练模型，其包含的检测类别相同，均包括：
+'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+‘
+fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+'hair drier', 'toothbrush' 80类。
+Size表示模型支持输入的图像尺寸为640*640。
+MAP（50-95）表示只有当预测结果置信度阈值为50-95时才算正确的话，模型在coco测试集上的预测精确度。
+Speed cpu b1表示该模型在cpu上的推理速度是多少。
+Speed V100 b1表示该模型在gpu上的推理速度是多少，其中V100为英伟达的一种显卡类型。
+Params表示模型需要训练的参数数量，单位是million。
+FLOPs表示模型执行推理时每秒需要进行的浮点数运算次数，次数越少说明模型约轻量，模型参数越少。
+移植过程和优化文档
+通过章节一得到yolo原始模型，其后缀为.pt，要想将其放到SS928芯片上执行推理，必须将其转换为.om模型，.pt模型转为.om模型需要分两步：1）.pt模型转为.onnx；2).onnx转为.om；其中，步骤1）依赖github开源的yolo工程，步骤2）依赖海思提供的atc工具，即资料包中的Ascend-cann-toolkit_6.10.t01spc030b330_linux.x86_64.run。下面将对步骤1）和步骤2）的实现进行详细的说明：
+环境搭建指南
+步骤1）.pt模型转换为.onnx
+1.准备一个纯净的ubuntu18:04的环境；
+2.安装anaconda（通过安装Anaconda来创建虚拟环境，可以在同一个系统上创建多个相互独立的 Python 运行环境。每个虚拟环境中都可以安装所需的 Python 包和库，以满足不同项目或应用程序的需求，而且不会影响到系统上其他的 Python 环境，保证了环境隔离。（与全局系统环境和其他虚拟环境都隔离开来））
+（1）Anaconda镜像资源下载网址：
+ HYPERLINK &quot;https://mirrors.bfsu.edu.cn/anaconda/archive/&quot; 
+https://mirrors.bfsu.edu.cn/anaconda/archive/
+ （2）选择对应的版本下载，下载完成后在终端输入命令运行.sh文件即可安装：
+    ```bash
+    ./Anaconda3-2020.11-Linux-x86_64.sh
+```
+注意anaconda版本的选择，不要选择太高的版本，默认安装高版本python。
+（3）等待安装，不断回车，输入yes
+（4）输入安装路径，即步骤（5）中的${install_path}
+（5）安装完成之后，根据提示将安装路径添加到环境变量中
+    ```bash
+    sudo vi ~/.bashrc
+    export PATH=${install_path}/bin:$PATH
+    ```
+    或
+    ```bash
+    conda init
+```
+输入conda可查看是否安装成功，若输出下图即为安装成功
+创建conda虚拟环境
+    ```bash
+    conda info list #查看当前所有conda虚拟环境
+    conda create -name py375 python==3.x.x #创建特定python版本的虚拟环境
+    conda activate py375 #激活虚拟环境
+    conda deactivate #退出虚拟环境
+    conda remove -n py375 --all #删除虚拟环境 
+    ```
+配置.pt转.onnx的环境
+    ```bash
+git clone https://github.com/ultralytics/yolov5  
+conda create -name yolov5 python==3.8.1 
+conda activate yolov5
+cd yolov5
+    pip install -r requirements.txt   
+    ```
+步骤2）.onnx转换为.om
+ATC工具依赖环境安装
+    这里的ATC工具即资料包中的Ascend-cann-toolkit_6.10.t01spc030b330_linux.x86_64.run，用来实现onnx到om的模型转换。
+    
+（1）安装依赖
+        ```bash
+     sudo apt-get install -y gcc g++ cmake make unzip build-essential zlib1g-dev libbz2-dev libsqlite3-dev libssl-dev libxslt1-dev libffi-dev
+        ```
+检查依赖是否安装成功
+        ```bash
+        gcc --version
+        g++ --version
+        cmake --version
+        make --version
+        unzip --version
+        dpkg -l build-essential | grep build-essential | grep ii
+        dpkg -l zlib1g-dev| grep zlib1g-dev| grep ii
+        dpkg -l libbz2-dev| grep libbz2-dev| grep ii
+        dpkg -l libsqlite3-dev| grep libsqlite3-dev| grep ii
+        dpkg -l libssl-dev| grep libssl-dev| grep ii
+        dpkg -l libxslt1-dev| grep libxslt1-dev| grep ii
+        dpkg -l libffi-dev| grep libffi-dev| grep ii
+        ```
+        不报错即可，可单行运行也可以通过shell脚本运行全部。
+ATC工具/CANN软件包安装
+        ```bash
+        #增加用户对软件包的可执行权限。 
+        chmod +x *.run
+        #检查软件包的一致性和完整性。
+        ./*.run --check
+        #执行如下命令进行安装
+        ./*.run --install
+        #若出现如下关键信息，这说明安装成功   
+        [INFO] xxx install success
+        #提示执行如下命令生效环境变量，运行后仅在当前终端会话中临时生效，将指令写入到~/.bashrc中，每次启动终端都会自动运行该指令。
+        ```bash
+      vi ~/.bashrc
+        source /usr/local/Ascend/ascend-toolkit/svp_latest/x86_64-linux/script/setenv.sh
+        ```
+#测试atc工具是否安装成功
+atc --help
+显示如下则为安装成功
+root用户
+非root用户
+软件包默认安装路径
+/usr/local/Ascend
+$HOME/Ascend
+安装详细日志路径
+/var/log/ascend_seclog/ascend_install.log
+$HOME/var/log/ascend_seclog/ascend_install.log
+安装后软件包的安装路径、安装命令以及运行用户信息记录路径
+${INSTALL_DIR}/ascend_toolkit_install.info
+${INSTALL_DIR}/ascend_toolkit_install.info
+ATC工具/CANN软件包卸载
+        ```bash
+        #进入软件包所在路径，执行以下命令进行卸载     
+        ./*.run --uninstall  
+        #卸载完成后，显示如下信息，说明卸载成功。
+        [INFO] xxx uninstall success
+        ```        
+至此，模型转换的环境配置完成，但推理代码的编译运行需要配置交叉编译环境。
+交叉编译环境配置
+依赖安装
+配置默认使用bash
+     ```bash
+     sudo dpkg-reconfigure dash #选择 no
+```
+安装依赖
+      ```bash
+sudo apt-get install make libc6-i386 lib32z1 lib32stdc++6 zlib1g-dev libncurses5-dev ncurses-term libncursesw5-dev g++ u-boot-tools texinfo texlive gawk libssl-dev openssl bc p7zip-full gperf bison flex diffutils git unzip
+sudo apt-get install zlib1g-dev liblzo2-dev uuid-dev pkg-config automake
+sudo apt-get install texlive
+      ```  
+交叉编译工具安装
+安装交叉编译工具
+     ```bash
+     tar -xvf aarch64-mix210-linux.tgz
+     sudo ./aarch64-mix210-linux.install
+     #安装完成后需要添加安装路径到环境变量中（~/.bashrc)
+     export PATH=&quot;/opt/linux/x86-arm/aarch64-mix210-linux/bin:$PATH&quot;
+     ```
+在命令行窗口输入aarch按Tab键查看是否能补齐，若如下图所示补齐即为安装成功。
+安装python相关依赖库
+原资料中要求，在conda虚拟环境中利用pip进行安装。pip是Python包管理器，它是Python的官方包管理工具。能够方便地安装、管理和卸载Python包和依赖项。使用pip可以轻松地将第三方库安装到相应的Python环境中。
+虚拟环境创建
+        ```bash
+        #创建虚拟环境
+        conda create -n py375 python==3.7.5 
+        #激活虚拟环境
+        conda activate py375 
+        ```
+pip安装依赖包
+        ```bash
+        #pip换源
+        mkdir ~/.pip 
+        touch ~/.pip/pip.conf
+        vi ~/.pip/pip.conf
+        #添加以下内容并保存
+        [global]
+        index-url = https://pypi.tuna.tsinghua.edu.cn/simple
+        ```  
+        换源前安装速度
+        换源后安装速度
+        运行以下指令安装依赖库
+        ```bash
+        #安装google.protobuf, 版本号&gt;=3.13.0
+        pip install protobuf 
+        #安装psutil, 版本号5.7.0
+        pip install psutil==5.7.0 
+        #安装numpy, 版本号&gt;=1.13.3
+        pip install numpy 
+        #安装scipy, 版本号1.4.1
+        pip install scipy==1.4.1 
+        #安装decorator, 版本号&gt;=4.4.0
+        pip install decorator 
+        #安装sympy, 版本号&gt;=1.5.1
+        pip install sympy 
+        #安装cffi, 版本号1.12.3
+        pip install cffi==1.12.3 
+        #安装pyyaml
+        pip install pyyaml 
+        #安装pathlib2
+        pip install pathlib2 
+        pip install kconfiglib wheel pycryptodome pyelftools
+        ```
+上述所有环境已打包成docker镜像，保存为tar包（见资料包中ybn_hasi_ss928.tar)，后续进行模型转换不需要再进行相应环境配置，执行下述docker指令即可：
+注意，这里要求
+开发环境
+所要求的硬件及操作系统要满足以下要求
+硬件：内存最小30GB
+操作系统：Ubuntu 18.04 x86_64
+需要用到sudo命令，请用户自行获取所需的sudo权限。
+```bash
+#加载tar包导入镜像
+docker load &lt; ${PATH}/ybn_hasi_ss928.tar
+#确认有无
+docker images | grep ybn
+#创建容器运行进入docker环境中，已将需要用到的代码即模型打包进镜像中，需要的话可自己设置挂载路径
+docker run -it -v ${本机挂载路径}:${镜像内挂载路径} --name test ybn_hasi_ss928:1.0 /bin/bash
+#创建后再次进入容器
+docker exec -it test /bin/bash
+``` 
+模型转换
+同上面的环境配置说明一样分两个步骤来进行说明：
+步骤1）.pt模型转换为.onnx
+由于芯片不支持五维的transpose算子，pt转onnx过程不能按照
+yolo提供的
+官方步骤，操作如下：
+以下指令均在激活的docker容器中运行。
+```bash
+cd /
+root
+/
+hasi_ss928/
+yolov5-7.0
+-patch
+/
+conda activate yolov5
+#在yolov5源码路径下运行以下命令，导出原始onnx模型
+，
+若无报错则代表当前环境正常
+python export.py --weights yolov5s.pt --include onnx
+#导入定制rpn算子补丁，本质为修改/models/yolo.py中的代码来去掉五维transpose操作
+并
+加入filter、sort、nms后处理
+git apply --reject 0001-yolov5-rpn.patch
+#重新导出onnx模型
+python export.py --weights yolov5s.pt --include onnx 
+```
+步骤2）.onnx模型转.om
+利用atc工具链Ascend-cann-toolkit_6.10.t01spc030b330_linux.x86_64.run
+实现onnx到om的转换。
+```bash
+docker exec -it 
+test
+ /bin/bash
+#推理代码目录
+cd /
+root
+/
+hasi_ss928/yolo
+/
+model
+#运行atc指令实现onnx转om
+bash onnx2om.sh
+#生成的om模型存放路径：/
+root
+/yolo/model/yolov5s_original.om
+```
+onnx2om.sh中atc转换参数说明：
+        ```bash
+        #执行模型转换onnx-&gt;om
+   atc --dump_data=0 --input_shape=&quot;images:1,3,640,640&quot; --log_level=0 --online_model_type=0 --batch_num=1 --input_format=NCHW --output=&quot;./model/yolov5s&quot; --soc_version=SS928V100 --insert_op_conf=./insert_op.cfg --framework=5 --compile_mode=0 --save_original_model=true --model=&quot;./yolov5s.onnx&quot; --image_list=&quot;images:./data/image_ref_list.txt&quot;
+        ```
+        atc参数含义
+        以下是指令中参数的详细解释：
+        atc: 命令行工具，用于将模型转换为适用于
+芯片
+处理器的模型格式。
+--dump_data
+=0:是否导出ATC转换模型过程中的数据到文件，0为不导出。
+        --input_shape=&quot;images:1,3,640,640&quot;:每次推理一张图像，3通道，图像大小为640*640。input_shape需要与image_list的量化校准文件数据匹配
+。
+--log_level
+=0:仅输出必要的日志信息。
+--online_model_type
+=0:板载端执行推理时，推理模型本身不输出调试相关的内容，没有网络结构和算子信息。
+--batch_num
+=1:推理输入图像的数目。
+        
+-
+-input_format=NCHW: 指定模型输入的数据格式为NCHW或NHWC
+        N：每次推理输入图像的数目。
+        C：Channels，图像通道，例如彩色RGB图像的Channels为3。
+        H：Height，图像高度，即垂直高度方向的像素个数。
+        W：Width，图像宽度，即水平宽度方向的像素个数。
+        其中caffe/onnx框架为NCHW，Tensorflow为NHWC。
+        --output=./yolov5n_om: 指定转换后的模型输出路径和文件名，这里将转换后的om模型保存为当前运行路径下的&quot;yolov5n_om&quot;文件中。
+       --soc_version=SS928V100: 指定 SoC 版本，这里使用的是SS928V100。
+   
+   
+--insert_op_conf=./insert_op_conf_yolov5n.cfg：AIPP（ Artificial Intelligence Pre-Processing）人工智能预处理使能并配置参数，用于在芯片硬件上完成数据预处理，包括通道转换、色域转换（转换图像格式）等，数据预处理之后再进行真正的模型推理。 
+        优点：无需cpu运行相关代码对图像进行预处理操作，减小cpu开销；图像数据不需要从cpu再传输到硬件，减少将数据从CPU传输到AI处理器的开销；
+        --framework=0: 制定原始模型的框架类型，0 表示使用的是 Caffe 框架，5表示使用onnx框架。
+--compile_mode=0
+:默认值。
+--save_original_model
+:output参数基础上加后缀 “*_original.om”格式结尾。
+        --model=./yolov5n.onnx: 指定原始模型文件路径。
+--image_list
+:--insert_op_conf配置图像预处理，即输入为图片时，文件内容为图片文件路径，一行一个图片文件路径，一行表示一个batch。图片大小不限，ATC根据输入的height × width缩放。
+        
+    
+使用说明和示例
+经过章节二得到可以在芯片上运行推理的om模型，基于该推理模型编写的芯片推理代码见docker容器中的/root/yolo目录。
+用户手册
+准备输入图片
+```bash
+#进入docker容器
+docker exec -it 
+test
+ /bin/bash
+#
+切换到/dat
+a
+目录下
+执行
+transferPic.py脚本，将*.bmp或*.jpg转换为*.bin，同时将图片分辨率缩放为模型输入所需的640×640。
+ 
+cd /root/hasi_ss928/yolo/data
+ python ../script/transferPic.py 5 
+```
+编译推理代码
+```bash
+#
+修改src/sample_process.cpp中的配置模型、bin文件默认
+路径
+#
+交叉编译代码，并在板载端运行
+mkdir build &amp; cd build 
+cmake .. &amp; make -j4
+ #生成的可执行文件在./out下
+```
+芯片执行推理
+```bash
+#
+将二进制可执行文件上传到板载芯片中
+chmod +x ${PATH}/out/main
+ ./main 5 //yolov5
+ #生成的结果.txt在./out中
+ ```
+推理结果可视化
+ ```bash
+#
+将结果文件
+复制到开发环境（docker容器环境）中的/root/hasi_ss928/yolo/out目录下
+ cd /
+root
+/
+hasi_ss928/
+yolo/out/
+ #执行画框指令
+ python ../script/drawbox.py -i ../data/dog_bike_car.jpg -t yolov
+5
+_detResult.txt
+ ```
+示例代码和测试数据
+示例代码及测试数据均在文件夹/root/hasi_ss928/yolo中，请按照a中提供步骤测试整个推理流程。
+问题排查和故障排除指南
+常见问题及解决方案
+问题1：
+解决方案：共享库路径加入环境变量中后运行source ~/.bashrc指令
+问题2：
+解决方案:未加载接口驱动文件，加载驱动
+```bash
+rmmod /ko/ot.pqp.ko
+    insmod /ko/svp_npu/ot_svp_npu.ko
+    ```
